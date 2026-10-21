@@ -11,6 +11,9 @@ Runs 100% on your computer (small local server on 127.0.0.1 + your browser as th
 4. Checks the last page (Invoice Total, Page N of N)
 5. Adds the "For and on behalf of" signature block to the last page
 
+**Invoice with number starting with "C" (e.g. C262093, not SC...)** - already signed, header already has no "Shipment":
+only the Actual Manufacturer address is replaced (no header edit, no signature block).
+
 **Packing List**
 1. Checks page 1 is a packing list
 2. Replaces the Actual Manufacturer address

@@ -9,6 +9,9 @@ Process
   4. Check last page of the Invoice (Invoice Total + "Page N of N")
   5. Add the "For and on behalf of" signature block to the last page
 
+Invoice numbers starting with "C" (e.g. C262093, not SC...) - already signed, header already without "Shipment"
+  Only the Actual Manufacturer address is replaced (steps 2, 4 and 5 are not done).
+
 Packing List (PL_*.pdf) - detected automatically from page 1
   1. Check first page is a Packing List (Packing List header + Actual Manufacturer box)
   2. Replace the Actual Manufacturer address with the same new address as the Invoice
@@ -63,6 +66,8 @@ BLOCK_LEFT = 36        # left margin
 SIGN_LINE_RIGHT = 247  # right end of the signature line
 SIGNED_RIGHT = 690     # right edge of the "digitally signed" text
 FONT_SIZE = 7
+ADDRESS_ONLY_PREFIXES = ("C",)   # invoice numbers starting with this (e.g. C262093, but not SC...) are
+                                 # already signed and have no "Shipment" in the header: only the address is edited
 AUTO_FIX = True        # accept known harmless check deviations (reported as [FIX]); --strict turns it off
 
 
@@ -419,6 +424,57 @@ def replace_manufacturer_pl(data, lines):
 # ----------------------------------------------------------------------------
 # main pipeline
 # ----------------------------------------------------------------------------
+def invoice_number_of(path):
+    """Invoice number from the header of page 1 (None if it cannot be read)."""
+    with pdfplumber.open(path) as pdf:
+        return _invoice_number(pdf.pages[0])
+
+
+def check_first_page_addr_only(path):
+    """Invoice already in final form (no 'Shipment' in the header): only check what the address edit needs."""
+    with pdfplumber.open(path) as pdf:
+        t = pdf.pages[0].extract_text() or ""
+    problems = []
+    if "Invoice Number" not in t:
+        problems.append("'Invoice Number' not found")
+    if "Actual Manufacturer" not in t:
+        problems.append("'Actual Manufacturer' box not found")
+    if "TRAX" not in t:
+        problems.append("old manufacturer text not found (already changed?)")
+    return problems
+
+
+def process_inv_addr_only(src, dst, force=False):
+    """Invoice numbers that start with 'C' (not 'SC'): replace the Actual Manufacturer address only.
+    The header is left as is and no signature block is added (these files are already signed)."""
+    problems = check_consistency(src) + check_first_page_addr_only(src)
+    if problems:
+        print(f"[CHECK] {src.name}: " + "; ".join(problems))
+        if not force:
+            print("        skipped (use --force to try anyway)")
+            return False
+    print(f"[CHECK] {src.name}: invoice type 'C' - address-only edit, first page OK")
+
+    reader = PdfReader(str(src))
+    writer = PdfWriter()
+    writer.append(reader)
+    page = writer.pages[0]
+    data = replace_manufacturer(get_stream(page), NEW_MANUFACTURER)
+    print("[EDIT ] manufacturer address replaced (header and signature untouched)")
+    set_stream(writer, page, data)
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with open(dst, "wb") as f:
+        writer.write(f)
+
+    with pdfplumber.open(dst) as pdf:
+        t = pdf.pages[0].extract_text()
+        pages_ok = len(pdf.pages) == len(reader.pages)
+    ok = new_address_ok(t) and pages_ok
+    print(f"[VERIFY] {'OK' if ok else 'FAILED'} -> {dst}")
+    return ok
+
+
 def process_inv(src, dst, keep_position=False, force=False, sign_page=None):
     lp, fixes, target, diag = check_last_page(src, sign_page)
     problems = check_consistency(src) + check_first_page(src) + lp
@@ -508,6 +564,9 @@ def process(src, dst, keep_position=False, force=False, sign_page=None):
     if kind == "PL":
         return process_pl(src, dst, force)
     if kind == "INV":
+        num = (invoice_number_of(src) or "").upper()
+        if num.startswith(ADDRESS_ONLY_PREFIXES):
+            return process_inv_addr_only(src, dst, force)
         return process_inv(src, dst, keep_position, force, sign_page)
     print(f"[CHECK] {src.name}: not recognised as Invoice or Packing List - skipped")
     return False

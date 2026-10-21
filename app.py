@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import inv_editor as core
 
 APP_NAME = "Invoice & PL Editor"
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 MAX_UPLOAD = 200 * 1024 * 1024  # 200 MB
 HEARTBEAT_TIMEOUT = 180         # seconds without a browser ping -> app exits
 CSRF_HEADER = ("X-Requested-With", "InvoiceEditor")
