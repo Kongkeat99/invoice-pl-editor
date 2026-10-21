@@ -10,7 +10,8 @@ Process
   5. Add the "For and on behalf of" signature block to the last page
 
 Invoice numbers starting with "C" (e.g. C262093, not SC...) - already signed, header already without "Shipment"
-  Only the Actual Manufacturer address is replaced (steps 2, 4 and 5 are not done).
+  Page 1: Actual Manufacturer address replaced. Last page: the company line under "For and on behalf of" and the
+  "digitally signed and authorized by" line are rewritten (settings). No header edit, no new signature block.
 
 Packing List (PL_*.pdf) - detected automatically from page 1
   1. Check first page is a Packing List (Packing List header + Actual Manufacturer box)
@@ -424,6 +425,39 @@ def replace_manufacturer_pl(data, lines):
 # ----------------------------------------------------------------------------
 # main pipeline
 # ----------------------------------------------------------------------------
+def replace_signature_block(data, company, signed_by):
+    """Last page of an already-signed invoice:
+      1. the company line under 'For and on behalf of'      -> company
+      2. the company line under 'digitally signed and authorized by' (right-aligned) -> signed_by
+    The text is edited inside the content stream; the right edge of line 2 stays where it was."""
+    m1 = re.compile(r"(behalf of\)\]TJ\n\S+ \S+ Td\n)\[\([^\n]*\]TJ").search(data)
+    if not m1:
+        raise ValueError("'For and on behalf of' company line not found in content stream")
+    data = data[: m1.start()] + m1.group(1) + f"[({pdf_escape(company)})]TJ" + data[m1.end():]
+
+    m2 = re.compile(
+        r"BT\n(\S+) (\S+) Td\n\[[^\n]*Signature\)\]TJ\n"          # 'Authorized Signature' (absolute x)
+        r"(\S+) (\S+) Td\n(\[\(This document has been digitally[^\n]*\]TJ\n)"  # line 1 (relative Td)
+        r"(\S+) (\S+) Td\n\[([^\n]*)\]TJ"                           # line 2 (the one to replace)
+    ).search(data)
+    if not m2:
+        raise ValueError("'digitally signed and authorized by' lines not found in content stream")
+    x1 = float(m2.group(1)) + float(m2.group(3))              # absolute x where line 1 starts
+    right = x1 + stringWidth("This document has been digitally signed and authorized by", "Helvetica", FONT_SIZE)
+    dx = (right - stringWidth(signed_by, "Helvetica", FONT_SIZE)) - x1
+    out = (data[: m2.start(6)] + f"{dx:.3f} {m2.group(7)} Td\n[({pdf_escape(signed_by)})]TJ" + data[m2.end():])
+    return out
+
+
+def check_last_page_signature(path):
+    """C-type invoices: the already-present signature block must be on the last page."""
+    with pdfplumber.open(path) as pdf:
+        last = pdf.pages[-1]
+        t = last.extract_text() or ""
+        found = has_text(last, ON_BEHALF_LINE1, t)
+    return [] if found else ["'For and on behalf of' block not found on last page"]
+
+
 def invoice_number_of(path):
     """Invoice number from the header of page 1 (None if it cannot be read)."""
     with pdfplumber.open(path) as pdf:
@@ -447,21 +481,30 @@ def check_first_page_addr_only(path):
 def process_inv_addr_only(src, dst, force=False):
     """Invoice numbers that start with 'C' (not 'SC'): replace the Actual Manufacturer address only.
     The header is left as is and no signature block is added (these files are already signed)."""
-    problems = check_consistency(src) + check_first_page_addr_only(src)
+    sig_problems = check_last_page_signature(src)
+    problems = check_consistency(src) + check_first_page_addr_only(src) + sig_problems
     if problems:
         print(f"[CHECK] {src.name}: " + "; ".join(problems))
         if not force:
             print("        skipped (use --force to try anyway)")
             return False
-    print(f"[CHECK] {src.name}: invoice type 'C' - address-only edit, first page OK")
+    print(f"[CHECK] {src.name}: invoice type 'C' - first page + last-page signature block OK")
 
     reader = PdfReader(str(src))
     writer = PdfWriter()
     writer.append(reader)
     page = writer.pages[0]
     data = replace_manufacturer(get_stream(page), NEW_MANUFACTURER)
-    print("[EDIT ] manufacturer address replaced (header and signature untouched)")
+    print("[EDIT ] manufacturer address replaced (header untouched)")
     set_stream(writer, page, data)
+
+    last = writer.pages[-1]
+    if sig_problems:
+        print("[WARN ] last-page signature block not found - only the address was edited")
+    else:
+        set_stream(writer, last, replace_signature_block(get_stream(last), ON_BEHALF_COMPANY, SIGNED_BY_2))
+        print(f"[EDIT ] last page: company line -> '{ON_BEHALF_COMPANY}'")
+        print(f"[EDIT ] last page: signed-by line -> '{SIGNED_BY_2}'")
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     with open(dst, "wb") as f:
@@ -469,8 +512,11 @@ def process_inv_addr_only(src, dst, force=False):
 
     with pdfplumber.open(dst) as pdf:
         t = pdf.pages[0].extract_text()
+        tl = pdf.pages[-1].extract_text() or ""
         pages_ok = len(pdf.pages) == len(reader.pages)
     ok = new_address_ok(t) and pages_ok
+    if not sig_problems:
+        ok = ok and ON_BEHALF_COMPANY in tl and SIGNED_BY_2 in tl
     print(f"[VERIFY] {'OK' if ok else 'FAILED'} -> {dst}")
     return ok
 
