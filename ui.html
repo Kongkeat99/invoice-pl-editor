@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Invoice &amp; PL Editor</title>
+<style>
+  :root{--bg:#f5f6f8;--card:#fff;--text:#1d2330;--muted:#6b7385;--line:#dfe3ea;--accent:#1f5fd6;--accent-t:#fff;--ok:#18794e;--okbg:#e3f6ec;--bad:#b42318;--badbg:#fde8e6}
+  @media (prefers-color-scheme:dark){:root{--bg:#14171d;--card:#1d222b;--text:#e8ebf1;--muted:#9aa3b5;--line:#2c3340;--accent:#5b8def;--accent-t:#0d1117;--ok:#5fd29b;--okbg:#14301f;--bad:#ff8a80;--badbg:#3a1a18}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:880px;margin:0 auto;padding:24px 16px 60px}
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+  h1{font-size:20px;margin:0}
+  .ver{color:var(--muted);font-size:13px;margin-left:8px;font-weight:400}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px}
+  .drop{border:2px dashed var(--line);border-radius:12px;padding:34px 16px;text-align:center;color:var(--muted);transition:.15s}
+  .drop.over{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,transparent)}
+  button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--text);padding:8px 14px;border-radius:8px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);color:var(--accent-t);border-color:var(--accent);font-weight:600}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .grow{flex:1}
+  ul{list-style:none;margin:12px 0 0;padding:0}
+  li.f{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+  .top{display:flex;gap:10px;align-items:center;justify-content:space-between}
+  .name{font-weight:600;word-break:break-all}
+  .badge{font-size:12px;padding:2px 9px;border-radius:99px;white-space:nowrap}
+  .b-wait{background:var(--line);color:var(--muted)}
+  .b-ok{background:var(--okbg);color:var(--ok)}
+  .b-bad{background:var(--badbg);color:var(--bad)}
+  pre{margin:8px 0 0;padding:8px 10px;background:var(--bg);border-radius:8px;font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;color:var(--muted)}
+  a.dl{color:var(--accent);font-weight:600;text-decoration:none;font-size:14px}
+  details summary{cursor:pointer;font-weight:600}
+  label{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
+  input[type=text],textarea{width:100%;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text)}
+  textarea{font-family:ui-monospace,Consolas,monospace;font-size:13px}
+  .chk{display:flex;gap:8px;align-items:center;margin-top:12px;color:var(--text);font-size:14px}
+  .hint{font-size:12px;color:var(--muted);margin-top:4px}
+  .msg{font-size:13px;color:var(--ok);margin-left:8px}
+  footer{color:var(--muted);font-size:12px;margin-top:20px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Invoice &amp; PL Editor<span class="ver" id="ver"></span></h1>
+    <button id="quit">Quit app</button>
+  </header>
+
+  <div class="card">
+    <div class="drop" id="drop">
+      <div style="font-size:16px;color:var(--text);margin-bottom:6px">Drop Invoice / Packing List PDFs here</div>
+      <div style="margin-bottom:12px">or</div>
+      <button id="pick">Choose PDF files…</button>
+      <input type="file" id="file" accept="application/pdf,.pdf" multiple hidden>
+    </div>
+    <ul id="list"></ul>
+    <div class="row" style="margin-top:14px">
+      <button class="primary" id="run" disabled>Process files</button>
+      <button id="clear" disabled>Clear list</button>
+      <span class="grow"></span>
+      <button id="open">Open output folder</button>
+    </div>
+    <div class="hint" id="outhint"></div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>Settings</summary>
+      <label for="manu">New Actual Manufacturer address (first line is shown bold, max 7 lines)</label>
+      <textarea id="manu" rows="6"></textarea>
+      <label for="company">“For and on behalf of” company (invoice last page)</label>
+      <input type="text" id="company">
+      <label for="signed">“Digitally signed and authorized by” name (invoice last page)</label>
+      <input type="text" id="signed">
+      <label for="outdir">Output folder</label>
+      <input type="text" id="outdir">
+      <label class="chk"><input type="checkbox" id="left"> Keep invoice header “Invoice as of…” at its original left position (default: keep the original right edge)</label>
+      <div class="row" style="margin-top:14px"><button id="save">Save settings</button><span class="msg" id="savemsg"></span></div>
+    </details>
+  </div>
+
+  <div class="card" style="font-size:13px;color:var(--muted)">
+    <b style="color:var(--text)">What it does</b><br>
+    <b>Invoice:</b> checks page 1 → removes “Shipment” from the header → replaces the manufacturer address → checks the last page → adds the “For and on behalf of” block.<br>
+    <b>Packing List:</b> checks page 1 → replaces the manufacturer address.<br>
+    Files are processed on this computer only. The original files are never changed; results are saved as <i>name_edited.pdf</i>.
+  </div>
+  <footer>The “digitally signed” line is plain text, not a cryptographic signature. Use it only where you are authorized to.</footer>
+</div>
+
+<script>
+const H = {"X-Requested-With": "InvoiceEditor"};
+const $ = id => document.getElementById(id);
+let queue = [];   // {file, li, state}
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({}, H, opts.headers || {});
+  const r = await fetch(path, opts);
+  return r.json();
+}
+
+function setForm(s) {
+  $("manu").value = s.manufacturer;
+  $("company").value = s.company;
+  $("signed").value = s.signed_by;
+  $("outdir").value = s.output_dir;
+  $("left").checked = !!s.left_align;
+  $("outhint").textContent = "Output folder: " + s.output_dir;
+}
+function readForm() {
+  return {manufacturer: $("manu").value, company: $("company").value, signed_by: $("signed").value,
+          output_dir: $("outdir").value, left_align: $("left").checked};
+}
+async function saveSettings(showMsg) {
+  const r = await api("/api/settings", {method: "POST", body: JSON.stringify(readForm())});
+  if (!r.ok) { alert(r.error || "Could not save settings"); return false; }
+  setForm(r.settings);
+  if (showMsg) { $("savemsg").textContent = "Saved"; setTimeout(() => $("savemsg").textContent = "", 2000); }
+  return true;
+}
+
+function addFiles(files) {
+  for (const f of files) {
+    if (!/\.pdf$/i.test(f.name)) continue;
+    const li = document.createElement("li");
+    li.className = "f";
+    li.innerHTML = '<div class="top"><span class="name"></span><span class="badge b-wait">Waiting</span></div>';
+    li.querySelector(".name").textContent = f.name;
+    $("list").appendChild(li);
+    queue.push({file: f, li, state: "wait"});
+  }
+  refresh();
+}
+function refresh() {
+  const waiting = queue.some(q => q.state === "wait");
+  $("run").disabled = !waiting;
+  $("clear").disabled = queue.length === 0;
+}
+function setBadge(q, cls, text) {
+  const b = q.li.querySelector(".badge");
+  b.className = "badge " + cls; b.textContent = text;
+}
+function addLog(q, text) {
+  if (!text) return;
+  const pre = document.createElement("pre"); pre.textContent = text; q.li.appendChild(pre);
+}
+
+async function run() {
+  $("run").disabled = true;
+  if (!(await saveSettings(false))) { refresh(); return; }
+  for (const q of queue.filter(x => x.state === "wait")) {
+    setBadge(q, "b-wait", "Processing…");
+    try {
+      const r = await api("/api/process?name=" + encodeURIComponent(q.file.name),
+                          {method: "POST", body: await q.file.arrayBuffer()});
+      q.state = r.ok ? "ok" : "bad";
+      setBadge(q, r.ok ? "b-ok" : "b-bad", r.ok ? "Done" : "Skipped / failed");
+      addLog(q, r.log || r.error);
+      if (r.ok) {
+        const a = document.createElement("a");
+        a.className = "dl"; a.href = "/api/download?file=" + encodeURIComponent(r.file);
+        a.textContent = "Download " + r.file; a.style.display = "inline-block"; a.style.marginTop = "8px";
+        q.li.appendChild(a);
+      }
+    } catch (e) {
+      q.state = "bad"; setBadge(q, "b-bad", "Error"); addLog(q, String(e));
+    }
+  }
+  refresh();
+}
+
+$("pick").onclick = () => $("file").click();
+$("file").onchange = e => { addFiles(e.target.files); e.target.value = ""; };
+$("run").onclick = run;
+$("clear").onclick = () => { queue = []; $("list").innerHTML = ""; refresh(); };
+$("save").onclick = () => saveSettings(true);
+$("open").onclick = async () => { await saveSettings(false); api("/api/open-folder", {method: "POST"}); };
+$("quit").onclick = async () => {
+  if (!confirm("Quit the app?")) return;
+  await api("/api/quit", {method: "POST"});
+  document.body.innerHTML = '<div style="padding:60px;text-align:center;font-family:system-ui">The app has stopped. You can close this tab.</div>';
+};
+const drop = $("drop");
+["dragenter", "dragover"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => addFiles(e.dataTransfer.files));
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => e.preventDefault());
+
+(async () => {
+  const info = await api("/api/info");
+  $("ver").textContent = "v" + info.version;
+  setForm(info.settings);
+  setInterval(() => api("/api/ping").catch(() => {}), 10000);
+})();
+</script>
+</body>
+</html>
