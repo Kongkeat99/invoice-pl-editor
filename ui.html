@@ -60,6 +60,7 @@
     <div class="row" style="margin-top:14px">
       <button class="primary" id="run" disabled>Process files</button>
       <button id="clear" disabled>Clear list</button>
+      <button id="dlall" disabled>Download all (zip)</button>
       <span class="grow"></span>
       <button id="open">Open output folder</button>
     </div>
@@ -136,8 +137,11 @@ function addFiles(files) {
 }
 function refresh() {
   const waiting = queue.some(q => q.state === "wait");
+  const done = queue.filter(q => q.state === "ok" && q.outName);
   $("run").disabled = !waiting;
   $("clear").disabled = queue.length === 0;
+  $("dlall").disabled = done.length === 0;
+  $("dlall").textContent = done.length ? "Download all (" + done.length + " files, zip)" : "Download all (zip)";
 }
 function setBadge(q, cls, text) {
   const b = q.li.querySelector(".badge");
@@ -148,33 +152,63 @@ function addLog(q, text) {
   const pre = document.createElement("pre"); pre.textContent = text; q.li.appendChild(pre);
 }
 
+async function processOne(q, force) {
+  q.li.querySelectorAll("pre, a.dl, button.force").forEach(e => e.remove());
+  q.outName = null;
+  setBadge(q, "b-wait", "Processing…");
+  try {
+    const r = await api("/api/process?name=" + encodeURIComponent(q.file.name) + (force ? "&force=1" : ""),
+                        {method: "POST", body: await q.file.arrayBuffer()});
+    q.state = r.ok ? "ok" : "bad";
+    setBadge(q, r.ok ? "b-ok" : "b-bad", r.ok ? "Done" : "Skipped / failed");
+    addLog(q, (r.log || r.error || "").replace(/\n\s*skipped \(use --force to try anyway\)/, ""));
+    if (r.ok) {
+      q.outName = r.file;
+      const a = document.createElement("a");
+      a.className = "dl"; a.href = "/api/download?file=" + encodeURIComponent(r.file);
+      a.textContent = "Download " + r.file; a.style.display = "inline-block"; a.style.marginTop = "8px";
+      q.li.appendChild(a);
+    } else if (r.can_force) {
+      const b = document.createElement("button");
+      b.className = "force"; b.textContent = "Process anyway (ignore the check)";
+      b.style.marginTop = "8px";
+      b.onclick = async () => {
+        if (!confirm("The check found a problem with this file (see the message). Process anyway?")) return;
+        await processOne(q, true); refresh();
+      };
+      q.li.appendChild(b);
+    }
+  } catch (e) {
+    q.state = "bad"; setBadge(q, "b-bad", "Error"); addLog(q, String(e));
+  }
+}
+
 async function run() {
   $("run").disabled = true;
   if (!(await saveSettings(false))) { refresh(); return; }
-  for (const q of queue.filter(x => x.state === "wait")) {
-    setBadge(q, "b-wait", "Processing…");
-    try {
-      const r = await api("/api/process?name=" + encodeURIComponent(q.file.name),
-                          {method: "POST", body: await q.file.arrayBuffer()});
-      q.state = r.ok ? "ok" : "bad";
-      setBadge(q, r.ok ? "b-ok" : "b-bad", r.ok ? "Done" : "Skipped / failed");
-      addLog(q, r.log || r.error);
-      if (r.ok) {
-        const a = document.createElement("a");
-        a.className = "dl"; a.href = "/api/download?file=" + encodeURIComponent(r.file);
-        a.textContent = "Download " + r.file; a.style.display = "inline-block"; a.style.marginTop = "8px";
-        q.li.appendChild(a);
-      }
-    } catch (e) {
-      q.state = "bad"; setBadge(q, "b-bad", "Error"); addLog(q, String(e));
-    }
-  }
+  for (const q of queue.filter(x => x.state === "wait")) await processOne(q, false);
   refresh();
 }
 
 $("pick").onclick = () => $("file").click();
 $("file").onchange = e => { addFiles(e.target.files); e.target.value = ""; };
 $("run").onclick = run;
+$("dlall").onclick = async () => {
+  const files = queue.filter(q => q.state === "ok" && q.outName).map(q => q.outName);
+  if (!files.length) return;
+  const btn = $("dlall"); btn.disabled = true;
+  try {
+    const res = await fetch("/api/download-all", {method: "POST", headers: H, body: JSON.stringify({files})});
+    if (!res.ok) { const e = await res.json().catch(() => ({})); alert(e.error || "Download failed"); return; }
+    const cd = res.headers.get("Content-Disposition") || "";
+    const m = /filename="([^"]+)"/.exec(cd);
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = m ? m[1] : "Invoice_PL.zip";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } finally { refresh(); }
+};
 $("clear").onclick = () => { queue = []; $("list").innerHTML = ""; refresh(); };
 $("save").onclick = () => saveSettings(true);
 $("open").onclick = async () => { await saveSettings(false); api("/api/open-folder", {method: "POST"}); };

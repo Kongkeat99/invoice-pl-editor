@@ -23,7 +23,7 @@ Download the zip for your system from the Releases page, unzip, double-click.
 - **Windows:** `InvoicePLEditor.exe`. If SmartScreen warns: *More info -> Run anyway* (the app is not code-signed).
 - **macOS:** `InvoicePLEditor.app`. First time: right-click -> *Open* -> *Open*.
 
-The browser opens automatically. Drop PDFs, click **Process files**, download or **Open output folder**.
+The browser opens automatically. Drop PDFs, click **Process files**, then download each file, use **Download all (zip)** for everything at once, or **Open output folder**.
 Close the tab or press **Quit app** to stop.
 
 Default output folder: `Documents/Invoice_PL_Edited` (changeable in Settings).
@@ -49,6 +49,10 @@ Command line (no UI): `python inv_editor.py INV_x.pdf PL_x.pdf -o out/`
 2. `git tag v1.0.0 && git push origin v1.0.0`
 3. GitHub Actions builds both apps and attaches `InvoicePLEditor-windows.zip` and
    `InvoicePLEditor-macos.zip` to the release. Share that link.
+
+## Safety checks
+Before editing, the tool checks that all pages belong to the same document (same invoice number, `Page x of N` matches the page count) and that the expected pages/fields exist. A file that fails is skipped with the reason; in the app a **Process anyway** button lets the user override after confirming.
+If the invoice totals end on the second-to-last page and the last page is an empty overflow page, the signature block is placed at the top of that last page.
 
 ## Limits
 - Made for this specific system-generated layout. A file that fails the page checks is skipped with a reason, never edited blindly.

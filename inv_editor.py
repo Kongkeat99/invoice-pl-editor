@@ -53,7 +53,10 @@ ON_BEHALF_COMPANY = "WELLCORP HOLDINGS TRADING HK LTD"
 SIGN_LABEL = "Authorized Signature"
 SIGNED_BY_1 = "This document has been digitally signed and authorized by"
 SIGNED_BY_2 = "Trax Apparel (Cambodia) Co., Ltd(29H001)"
-BLOCK_TOP = 262        # pt from top of page where "For and on behalf of" sits
+BLOCK_TOP = 262        # minimum pt from top where "For and on behalf of" sits
+BLOCK_GAP = 53         # gap between the last content line and the block
+BLOCK_HEIGHT = 98      # height of the whole block (first line to last line)
+OVERFLOW_TOP = 48      # top of the block when the last page is an empty overflow page
 BLOCK_LEFT = 36        # left margin
 SIGN_LINE_RIGHT = 247  # right end of the signature line
 SIGNED_RIGHT = 690     # right edge of the "digitally signed" text
@@ -85,18 +88,60 @@ def check_first_page(path):
     return problems
 
 
+def _footer_top(words, height):
+    f = [w["top"] for w in words if w["text"] == "Page" and w["top"] > height * 0.6]
+    return min(f) if f else height - 60
+
+
 def check_last_page(path):
-    """Step 4 - last page must be the invoice summary page (Invoice Total, Page N of N)."""
+    """Step 4 - the invoice totals must be on the last page, or on the page before it when
+    the last page is only an empty overflow page (footer 'Page N of N' and nothing else)."""
     with pdfplumber.open(path) as pdf:
         n = len(pdf.pages)
-        text = pdf.pages[-1].extract_text() or ""
+        last = pdf.pages[-1]
+        text = last.extract_text() or ""
+        words = last.extract_words()
+        ft = _footer_top(words, float(last.height))
+        blank = not [w for w in words if w["top"] < ft - 1]
+        prev_text = (pdf.pages[-2].extract_text() or "") if n > 1 else ""
     problems = []
     if "Invoice Total" not in text:
-        problems.append("'Invoice Total' not found on last page")
+        if not (blank and "Invoice Total" in prev_text):
+            problems.append("'Invoice Total' not found on last page")
     if f"Page {n} of {n}" not in text:
         problems.append(f"'Page {n} of {n}' not found on last page")
     if ON_BEHALF_LINE1 in text:
         problems.append("'For and on behalf of' already present")
+    return problems
+
+
+def _invoice_number(page):
+    """Invoice number printed under the 'Invoice Number' label in the page header."""
+    ws = page.extract_words()
+    for i, w in enumerate(ws[:-1]):
+        if w["text"] == "Invoice" and ws[i + 1]["text"] == "Number" and abs(ws[i + 1]["top"] - w["top"]) < 1:
+            for c in ws:
+                if abs(c["x0"] - w["x0"]) < 3 and 4 < c["top"] - w["top"] < 20:
+                    return c["text"]
+    return None
+
+
+def check_consistency(path):
+    """All pages must belong to the same document: same invoice number, 'Page x of N' with N = page count."""
+    problems = []
+    with pdfplumber.open(path) as pdf:
+        n = len(pdf.pages)
+        nums = {}
+        for i, p in enumerate(pdf.pages, 1):
+            v = _invoice_number(p)
+            if v:
+                nums.setdefault(v, []).append(i)
+            m = re.search(r"Page \d+ of (\d+)", p.extract_text() or "")
+            if m and int(m.group(1)) != n:
+                problems.append(f"page {i} says 'of {m.group(1)}' but the file has {n} pages")
+    if len(nums) > 1:
+        detail = ", ".join(f"{k} (page {','.join(map(str, v[:3]))}{'...' if len(v) > 3 else ''})" for k, v in nums.items())
+        problems.insert(0, f"pages belong to different documents: {detail}")
     return problems
 
 
@@ -175,7 +220,25 @@ def find_font(page, base):
     raise ValueError(f"font {base} not in page resources")
 
 
-def add_on_behalf_block(page, data):
+def find_block_top(path):
+    """Top (pt from page top) for the block: below the lowest content on the last page,
+    above the footer ('Page N of N'). Returns (top, fits)."""
+    with pdfplumber.open(path) as pdf:
+        p = pdf.pages[-1]
+        words = p.extract_words()
+        height = float(p.height)
+    footers = [w["top"] for w in words if w["text"] == "Page" and w["top"] > height * 0.6]
+    footer_top = min(footers) if footers else height - 60
+    body = [w["bottom"] for w in words if w["top"] < footer_top - 1]
+    content_bottom = max(body) if body else 0
+    if not body:                       # empty overflow page: start at the top of the page
+        return OVERFLOW_TOP, True
+    top = max(BLOCK_TOP, content_bottom + BLOCK_GAP)
+    fits = top + BLOCK_HEIGHT <= footer_top - 4
+    return top, fits
+
+
+def add_on_behalf_block(page, data, block_top=None):
     H = float(page.mediabox.height)
     reg = find_font(page, "/Helvetica")
     y = lambda top: H - top - FONT_SIZE * 0.8  # top of text -> baseline
@@ -187,7 +250,7 @@ def add_on_behalf_block(page, data):
         w = stringWidth(s, "Helvetica", FONT_SIZE)
         return text(font, rx - w, top, s)
 
-    t = BLOCK_TOP
+    t = BLOCK_TOP if block_top is None else block_top
     parts = [
         "q", "0 0 0 rg", "0 0 0 RG",
         text(reg, BLOCK_LEFT, t, ON_BEHALF_LINE1),
@@ -258,7 +321,7 @@ def replace_manufacturer_pl(data, lines):
 # main pipeline
 # ----------------------------------------------------------------------------
 def process_inv(src, dst, keep_position=False, force=False):
-    problems = check_first_page(src) + check_last_page(src)
+    problems = check_consistency(src) + check_first_page(src) + check_last_page(src)
     if problems:
         print(f"[CHECK] {src.name}: " + "; ".join(problems))
         if not force:
@@ -279,8 +342,11 @@ def process_inv(src, dst, keep_position=False, force=False):
     set_stream(writer, page, data)
 
     last = writer.pages[-1]
-    set_stream(writer, last, add_on_behalf_block(last, get_stream(last)))
-    print("[EDIT ] 'For and on behalf of' block added to last page")
+    top, fits = find_block_top(src)
+    set_stream(writer, last, add_on_behalf_block(last, get_stream(last), top))
+    print(f"[EDIT ] 'For and on behalf of' block added to last page (top = {top:.0f}pt)")
+    if not fits:
+        print("[WARN ] not enough free space on the last page - block may touch the footer, please check")
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     with open(dst, "wb") as f:
@@ -301,7 +367,7 @@ def process_inv(src, dst, keep_position=False, force=False):
 
 
 def process_pl(src, dst, force=False):
-    problems = check_pl_first_page(src)
+    problems = check_consistency(src) + check_pl_first_page(src)
     if problems:
         print(f"[CHECK] {src.name}: " + "; ".join(problems))
         if not force:

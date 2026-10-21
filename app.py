@@ -11,6 +11,8 @@ Build: see build_windows.bat / build_mac_linux.sh
 """
 import contextlib
 import io
+import zipfile
+from datetime import datetime
 import json
 import os
 import socket
@@ -27,7 +29,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import inv_editor as core
 
 APP_NAME = "Invoice & PL Editor"
-VERSION = "1.0.1"
+VERSION = "1.0.4"
 MAX_UPLOAD = 200 * 1024 * 1024  # 200 MB
 HEARTBEAT_TIMEOUT = 180         # seconds without a browser ping -> app exits
 CSRF_HEADER = ("X-Requested-With", "InvoiceEditor")
@@ -95,7 +97,7 @@ def apply_settings(s):
 # ----------------------------------------------------------------------------
 # processing
 # ----------------------------------------------------------------------------
-def process_pdf(name, data):
+def process_pdf(name, data, force=False):
     """Edit one uploaded PDF. Returns dict for the UI."""
     name = Path(name).name
     if not name.lower().endswith(".pdf"):
@@ -115,13 +117,15 @@ def process_pdf(name, data):
             src.write_bytes(data)
             with contextlib.redirect_stdout(buf):
                 try:
-                    ok = core.process(src, dst, not s["left_align"], False)
+                    ok = core.process(src, dst, not s["left_align"], force)
                 except Exception as e:  # shown to the user
                     print(f"[ERROR] {e}")
+    log = buf.getvalue().strip()
     return {
         "ok": bool(ok),
         "name": name,
-        "log": buf.getvalue().strip(),
+        "can_force": (not ok) and "--force" in log,
+        "log": log,
         "file": dst.name if ok else None,
         "path": str(dst) if ok else None,
     }
@@ -215,7 +219,29 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "settings": s})
             elif u.path == "/api/process":
                 name = unquote(qs.get("name", ["file.pdf"])[0])
-                self._json(process_pdf(name, self._body()))
+                force = qs.get("force", ["0"])[0] == "1"
+                self._json(process_pdf(name, self._body(), force))
+            elif u.path == "/api/download-all":
+                names = json.loads(self._body().decode("utf-8")).get("files", [])
+                outdir = Path(load_settings()["output_dir"]).expanduser()
+                buf = io.BytesIO()
+                added = 0
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                    for n in dict.fromkeys(Path(str(x)).name for x in names):
+                        f = outdir / n
+                        if n.lower().endswith(".pdf") and f.is_file():
+                            z.write(f, arcname=n)
+                            added += 1
+                if not added:
+                    return self._json({"ok": False, "error": "No processed files found"}, 404)
+                body = buf.getvalue()
+                zname = datetime.now().strftime("Invoice_PL_%Y%m%d_%H%M%S.zip")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition", f'attachment; filename="{zname}"')
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             elif u.path == "/api/open-folder":
                 open_folder(Path(load_settings()["output_dir"]).expanduser())
                 self._json({"ok": True})
