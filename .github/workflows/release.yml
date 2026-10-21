@@ -1,0 +1,51 @@
+# Builds Windows + macOS apps and attaches them to a GitHub Release.
+# Release:  git tag v1.0.0 && git push origin v1.0.0
+name: build-release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            sep: ";"
+            args: "--onefile --windowed"
+            artifact: InvoicePLEditor-windows
+            pack: "Compress-Archive -Path dist/InvoicePLEditor.exe -DestinationPath InvoicePLEditor-windows.zip"
+          - os: macos-latest
+            sep: ":"
+            args: "--onedir --windowed"
+            artifact: InvoicePLEditor-macos
+            pack: "cd dist && zip -r ../InvoicePLEditor-macos.zip InvoicePLEditor.app"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-build.txt
+      - name: Build
+        run: >
+          python -m PyInstaller --noconfirm --clean ${{ matrix.args }}
+          --name InvoicePLEditor
+          --add-data "ui.html${{ matrix.sep }}."
+          --collect-all pdfminer --collect-all pdfplumber --collect-all pypdfium2
+          app.py
+      - name: Package
+        run: ${{ matrix.pack }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact }}.zip
