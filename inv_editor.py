@@ -20,6 +20,8 @@ Usage
   python inv_editor.py INV_SC260372.pdf -o out/   -> out/INV_SC260372.pdf (same name; without -o: *_edited.pdf)
   python inv_editor.py a.pdf b.pdf -o out_dir/          -> batch
   python inv_editor.py a.pdf --left-align              -> header starts at original left x
+  python inv_editor.py a.pdf --sign-page 10            -> manual fix: signature block on page 10
+  python inv_editor.py a.pdf --strict                  -> no automatic fixes of known cases
 """
 import argparse
 import re
@@ -61,6 +63,7 @@ BLOCK_LEFT = 36        # left margin
 SIGN_LINE_RIGHT = 247  # right end of the signature line
 SIGNED_RIGHT = 690     # right edge of the "digitally signed" text
 FONT_SIZE = 7
+AUTO_FIX = True        # accept known harmless check deviations (reported as [FIX]); --strict turns it off
 
 
 def new_address_ok(text):
@@ -93,26 +96,122 @@ def _footer_top(words, height):
     return min(f) if f else height - 60
 
 
-def check_last_page(path):
-    """Step 4 - the invoice totals must be on the last page, or on the page before it when
-    the last page is only an empty overflow page (footer 'Page N of N' and nothing else)."""
+# --- tolerant text helpers ---------------------------------------------------
+# Some system-generated PDFs use kerning that makes pdfplumber split or merge
+# words ("Page 1 1 of 1 1", "Page11 of 11"). These helpers retry with looser
+# settings and compare with all whitespace removed.
+_FOOT_RE = re.compile(r"Page\s*(\d+)\s*of\s*(\d+)")
+_TOLERANCES = ({}, {"x_tolerance": 6}, {"x_tolerance": 1.5})
+
+
+def _compact(t):
+    return re.sub(r"\s+", "", t).lower()
+
+
+def read_footer(page, text=None):
+    """'Page x of y' printed on the page -> (x, y), or None. Uses looser text extraction
+    if the normal one does not show it."""
+    for i, kw in enumerate(_TOLERANCES):
+        t = text if (i == 0 and text is not None) else (page.extract_text(**kw) or "")
+        m = _FOOT_RE.findall(t)
+        if m:
+            return int(m[-1][0]), int(m[-1][1])
+        m = re.findall(r"Page(\d+)of(\d+)", re.sub(r"\s+", "", t))   # digits split by spaces
+        if m:
+            return int(m[-1][0]), int(m[-1][1])
+    return None
+
+
+def has_text(page, needle, text=None):
+    """needle present on the page, ignoring spaces/case, retrying with looser extraction."""
+    n = _compact(needle)
+    for i, kw in enumerate(_TOLERANCES):
+        t = text if (i == 0 and text is not None) else (page.extract_text(**kw) or "")
+        if n in _compact(t):
+            return True
+    return False
+
+
+def analyse_invoice(path):
+    """Facts about every page that the last-page check and the diagnosis need."""
     with pdfplumber.open(path) as pdf:
         n = len(pdf.pages)
+        footers, total_pages, blanks = [], [], []
+        for i, p in enumerate(pdf.pages):
+            t = p.extract_text() or ""
+            footers.append(read_footer(p, t))
+            if has_text(p, "Invoice Total", t):
+                total_pages.append(i)
+            words = p.extract_words()
+            ft = _footer_top(words, float(p.height))
+            blanks.append(not [w for w in words if w["top"] < ft - 1])
         last = pdf.pages[-1]
-        text = last.extract_text() or ""
-        words = last.extract_words()
-        ft = _footer_top(words, float(last.height))
-        blank = not [w for w in words if w["top"] < ft - 1]
-        prev_text = (pdf.pages[-2].extract_text() or "") if n > 1 else ""
-    problems = []
-    if "Invoice Total" not in text:
-        if not (blank and "Invoice Total" in prev_text):
-            problems.append("'Invoice Total' not found on last page")
-    if f"Page {n} of {n}" not in text:
-        problems.append(f"'Page {n} of {n}' not found on last page")
-    if ON_BEHALF_LINE1 in text:
+        tail = [ln for ln in (last.extract_text() or "").splitlines() if ln.strip()][-4:]
+        behalf = {i: has_text(pdf.pages[i], ON_BEHALF_LINE1) for i in {n - 1, *total_pages[-1:]}}
+    return {"n": n, "footers": footers, "total_pages": total_pages, "blanks": blanks,
+            "tail": tail, "behalf": behalf}
+
+
+def diagnose_invoice(a):
+    """Human-readable lines that explain what the checker saw (shown when a file fails)."""
+    foot = ", ".join(
+        f"p{i}: " + (f"'Page {f[0]} of {f[1]}'" if f else "none") for i, f in enumerate(a["footers"], 1)
+    )
+    tp = ", ".join(str(i + 1) for i in a["total_pages"]) or "none"
+    lines = [
+        f"[DIAG ] {a['n']} pages; 'Invoice Total' on page(s): {tp}",
+        f"[DIAG ] footers read: {foot}",
+        "[DIAG ] last page ends with: " + (" | ".join(a["tail"]) or "(no text)"),
+    ]
+    return lines
+
+
+def check_last_page(path, sign_page=None, auto_fix=None):
+    """Step 4 - find where the signature block belongs and check that page.
+
+    Returns (problems, fixes, target_index, diag_lines)
+      problems : reasons the file is NOT safe to edit (file is skipped unless forced)
+      fixes    : known harmless deviations that were accepted automatically (AUTO_FIX)
+      target   : 0-based index of the page that gets the block
+      sign_page: 1-based page chosen by the user (overrides the automatic choice)
+    """
+    auto = AUTO_FIX if auto_fix is None else auto_fix
+    a = analyse_invoice(path)
+    n, last = a["n"], a["n"] - 1
+    problems, fixes = [], []
+    tp = a["total_pages"][-1] if a["total_pages"] else None
+    target = last
+
+    if tp is None:
+        problems.append("'Invoice Total' not found on any page")
+    if sign_page is not None:
+        if 1 <= sign_page <= n:
+            target = sign_page - 1
+            fixes.append(f"signature block goes on page {sign_page} (chosen manually)")
+        else:
+            problems.append(f"signature page {sign_page} is outside 1..{n}")
+    elif tp is not None and tp != last:
+        if tp == last - 1 and a["blanks"][last]:
+            pass                                   # totals on page N-1, page N is an empty overflow page
+        else:
+            problems.append(f"'Invoice Total' is on page {tp + 1} but the file has {n} pages "
+                            f"(page {last + 1} has other content)")
+            target = tp                            # only used when forced
+
+    f = a["footers"][last]
+    if f != (n, n):
+        msg = f"'Page {n} of {n}' not found on last page" + (f" (page shows 'Page {f[0]} of {f[1]}')" if f else "")
+        others = [x for i, x in enumerate(a["footers"]) if i != last and x and x[1] == n]
+        # Known harmless case: the last-page footer cannot be read (or has a wrong number) but the
+        # Invoice Total is there and the other pages prove the document is complete ("of N").
+        if auto and tp is not None and (others or n == 1) and (f is None or f[1] == n):
+            fixes.append(f"{msg} -> accepted: Invoice Total found and {len(others)} other page(s) show 'of {n}'")
+        else:
+            problems.append(msg)
+
+    if a["behalf"].get(target):
         problems.append("'For and on behalf of' already present")
-    return problems
+    return problems, fixes, target, diagnose_invoice(a)
 
 
 def _invoice_number(page):
@@ -136,9 +235,9 @@ def check_consistency(path):
             v = _invoice_number(p)
             if v:
                 nums.setdefault(v, []).append(i)
-            m = re.search(r"Page \d+ of (\d+)", p.extract_text() or "")
-            if m and int(m.group(1)) != n:
-                problems.append(f"page {i} says 'of {m.group(1)}' but the file has {n} pages")
+            f = read_footer(p)
+            if f and f[1] != n:
+                problems.append(f"page {i} says 'of {f[1]}' but the file has {n} pages")
     if len(nums) > 1:
         detail = ", ".join(f"{k} (page {','.join(map(str, v[:3]))}{'...' if len(v) > 3 else ''})" for k, v in nums.items())
         problems.insert(0, f"pages belong to different documents: {detail}")
@@ -220,11 +319,11 @@ def find_font(page, base):
     raise ValueError(f"font {base} not in page resources")
 
 
-def find_block_top(path):
-    """Top (pt from page top) for the block: below the lowest content on the last page,
-    above the footer ('Page N of N'). Returns (top, fits)."""
+def find_block_top(path, idx=-1):
+    """Top (pt from page top) for the block: below the lowest content on page idx (default:
+    the last page), above the footer ('Page N of N'). Returns (top, fits)."""
     with pdfplumber.open(path) as pdf:
-        p = pdf.pages[-1]
+        p = pdf.pages[idx]
         words = p.extract_words()
         height = float(p.height)
     footers = [w["top"] for w in words if w["text"] == "Page" and w["top"] > height * 0.6]
@@ -320,14 +419,19 @@ def replace_manufacturer_pl(data, lines):
 # ----------------------------------------------------------------------------
 # main pipeline
 # ----------------------------------------------------------------------------
-def process_inv(src, dst, keep_position=False, force=False):
-    problems = check_consistency(src) + check_first_page(src) + check_last_page(src)
+def process_inv(src, dst, keep_position=False, force=False, sign_page=None):
+    lp, fixes, target, diag = check_last_page(src, sign_page)
+    problems = check_consistency(src) + check_first_page(src) + lp
+    for fx in fixes:
+        print(f"[FIX  ] {fx}")
     if problems:
         print(f"[CHECK] {src.name}: " + "; ".join(problems))
+        for d in diag:
+            print(d)
         if not force:
             print("        skipped (use --force to try anyway)")
             return False
-    print(f"[CHECK] {src.name}: first page + last page OK")
+    print(f"[CHECK] {src.name}: first page + last page OK" + (" (with fixes above)" if fixes else ""))
 
     reader = PdfReader(str(src))
     writer = PdfWriter()
@@ -341,12 +445,12 @@ def process_inv(src, dst, keep_position=False, force=False):
     print("[EDIT ] manufacturer address replaced")
     set_stream(writer, page, data)
 
-    last = writer.pages[-1]
-    top, fits = find_block_top(src)
-    set_stream(writer, last, add_on_behalf_block(last, get_stream(last), top))
-    print(f"[EDIT ] 'For and on behalf of' block added to last page (top = {top:.0f}pt)")
+    sig = writer.pages[target]
+    top, fits = find_block_top(src, target)
+    set_stream(writer, sig, add_on_behalf_block(sig, get_stream(sig), top))
+    print(f"[EDIT ] 'For and on behalf of' block added to page {target + 1} of {len(reader.pages)} (top = {top:.0f}pt)")
     if not fits:
-        print("[WARN ] not enough free space on the last page - block may touch the footer, please check")
+        print("[WARN ] not enough free space on that page - block may touch the footer, please check")
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     with open(dst, "wb") as f:
@@ -355,7 +459,7 @@ def process_inv(src, dst, keep_position=False, force=False):
     # verify
     with pdfplumber.open(dst) as pdf:
         t = pdf.pages[0].extract_text()
-        tl = pdf.pages[-1].extract_text()
+        tl = pdf.pages[target].extract_text()
     ok = (
         "Shipment Invoice" not in t
         and new_address_ok(t)
@@ -399,12 +503,12 @@ def process_pl(src, dst, force=False):
     return ok
 
 
-def process(src, dst, keep_position=False, force=False):
+def process(src, dst, keep_position=False, force=False, sign_page=None):
     kind = detect_type(src)
     if kind == "PL":
         return process_pl(src, dst, force)
     if kind == "INV":
-        return process_inv(src, dst, keep_position, force)
+        return process_inv(src, dst, keep_position, force, sign_page)
     print(f"[CHECK] {src.name}: not recognised as Invoice or Packing List - skipped")
     return False
 
@@ -417,7 +521,14 @@ def main():
                     help="start 'Invoice as of ...' at the original left x instead of keeping "
                          "the original right edge (default: right edge kept)")
     ap.add_argument("--force", action="store_true", help="edit even if the check fails")
+    ap.add_argument("--strict", action="store_true",
+                    help="no automatic fixes: skip every file whose check does not pass exactly")
+    ap.add_argument("--sign-page", type=int, metavar="N",
+                    help="invoice only: put the 'For and on behalf of' block on page N "
+                         "(manual fix when the last page is not where it belongs)")
     a = ap.parse_args()
+    global AUTO_FIX
+    AUTO_FIX = not a.strict
 
     ok_all = True
     for f in a.files:
@@ -426,7 +537,7 @@ def main():
             dst = f.with_name(f"{f.stem}_edited.pdf")
             print(f"[NOTE ] output folder = input folder, saving as {dst.name}")
         try:
-            ok_all &= process(f, dst, not a.left_align, a.force)
+            ok_all &= process(f, dst, not a.left_align, a.force, a.sign_page)
         except Exception as e:
             print(f"[ERROR] {f.name}: {e}")
             ok_all = False

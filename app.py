@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import inv_editor as core
 
 APP_NAME = "Invoice & PL Editor"
-VERSION = "1.0.4"
+VERSION = "1.1.0"
 MAX_UPLOAD = 200 * 1024 * 1024  # 200 MB
 HEARTBEAT_TIMEOUT = 180         # seconds without a browser ping -> app exits
 CSRF_HEADER = ("X-Requested-With", "InvoiceEditor")
@@ -42,6 +42,7 @@ DEFAULTS = {
     "company": core.ON_BEHALF_COMPANY,
     "signed_by": core.SIGNED_BY_2,
     "left_align": False,
+    "auto_fix": True,
     "output_dir": str(Path.home() / "Documents" / "Invoice_PL_Edited"),
 }
 
@@ -72,6 +73,7 @@ def clean_settings(data):
         if k in data:
             s[k] = data[k]
     s["left_align"] = bool(s["left_align"])
+    s["auto_fix"] = bool(s["auto_fix"])
     lines = [x.strip() for x in str(s["manufacturer"]).splitlines() if x.strip()]
     if not 1 <= len(lines) <= 7:
         raise ValueError("Manufacturer address must have 1 to 7 lines")
@@ -92,13 +94,15 @@ def apply_settings(s):
     core.NEW_MANUFACTURER = s["manufacturer"].splitlines()
     core.ON_BEHALF_COMPANY = s["company"]
     core.SIGNED_BY_2 = s["signed_by"]
+    core.AUTO_FIX = s["auto_fix"]
 
 
 # ----------------------------------------------------------------------------
 # processing
 # ----------------------------------------------------------------------------
-def process_pdf(name, data, force=False):
-    """Edit one uploaded PDF. Returns dict for the UI."""
+def process_pdf(name, data, force=False, sign_page=None):
+    """Edit one uploaded PDF. Returns dict for the UI.
+    sign_page: invoice only, 1-based page for the signature block (manual fix of a failed case)."""
     name = Path(name).name
     if not name.lower().endswith(".pdf"):
         return {"ok": False, "log": "Not a PDF file", "name": name}
@@ -117,7 +121,7 @@ def process_pdf(name, data, force=False):
             src.write_bytes(data)
             with contextlib.redirect_stdout(buf):
                 try:
-                    ok = core.process(src, dst, not s["left_align"], force)
+                    ok = core.process(src, dst, not s["left_align"], force, sign_page)
                 except Exception as e:  # shown to the user
                     print(f"[ERROR] {e}")
     log = buf.getvalue().strip()
@@ -220,7 +224,9 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/process":
                 name = unquote(qs.get("name", ["file.pdf"])[0])
                 force = qs.get("force", ["0"])[0] == "1"
-                self._json(process_pdf(name, self._body(), force))
+                pg = qs.get("page", [""])[0].strip()
+                sign_page = int(pg) if pg.isdigit() else None
+                self._json(process_pdf(name, self._body(), force, sign_page))
             elif u.path == "/api/download-all":
                 names = json.loads(self._body().decode("utf-8")).get("files", [])
                 outdir = Path(load_settings()["output_dir"]).expanduser()

@@ -78,6 +78,7 @@
       <input type="text" id="signed">
       <label for="outdir">Output folder</label>
       <input type="text" id="outdir">
+      <label class="chk"><input type="checkbox" id="autofix"> Auto-fix known failed cases (e.g. last-page footer cannot be read but Invoice Total and the other pages are fine). Every fix is listed in the file's log. Untick for strict mode: skip anything that does not pass exactly.</label>
       <label class="chk"><input type="checkbox" id="left"> Keep invoice header “Invoice as of…” at its original left position (default: keep the original right edge)</label>
       <div class="row" style="margin-top:14px"><button id="save">Save settings</button><span class="msg" id="savemsg"></span></div>
     </details>
@@ -109,11 +110,12 @@ function setForm(s) {
   $("signed").value = s.signed_by;
   $("outdir").value = s.output_dir;
   $("left").checked = !!s.left_align;
+  $("autofix").checked = s.auto_fix !== false;
   $("outhint").textContent = "Output folder: " + s.output_dir;
 }
 function readForm() {
   return {manufacturer: $("manu").value, company: $("company").value, signed_by: $("signed").value,
-          output_dir: $("outdir").value, left_align: $("left").checked};
+          output_dir: $("outdir").value, left_align: $("left").checked, auto_fix: $("autofix").checked};
 }
 async function saveSettings(showMsg) {
   const r = await api("/api/settings", {method: "POST", body: JSON.stringify(readForm())});
@@ -152,12 +154,12 @@ function addLog(q, text) {
   const pre = document.createElement("pre"); pre.textContent = text; q.li.appendChild(pre);
 }
 
-async function processOne(q, force) {
-  q.li.querySelectorAll("pre, a.dl, button.force").forEach(e => e.remove());
+async function processOne(q, force, page) {
+  q.li.querySelectorAll("pre, a.dl, button.force, .fixrow").forEach(e => e.remove());
   q.outName = null;
   setBadge(q, "b-wait", "Processing…");
   try {
-    const r = await api("/api/process?name=" + encodeURIComponent(q.file.name) + (force ? "&force=1" : ""),
+    const r = await api("/api/process?name=" + encodeURIComponent(q.file.name) + (force ? "&force=1" : "") + (page ? "&page=" + page : ""),
                         {method: "POST", body: await q.file.arrayBuffer()});
     q.state = r.ok ? "ok" : "bad";
     setBadge(q, r.ok ? "b-ok" : "b-bad", r.ok ? "Done" : "Skipped / failed");
@@ -169,14 +171,27 @@ async function processOne(q, force) {
       a.textContent = "Download " + r.file; a.style.display = "inline-block"; a.style.marginTop = "8px";
       q.li.appendChild(a);
     } else if (r.can_force) {
-      const b = document.createElement("button");
-      b.className = "force"; b.textContent = "Process anyway (ignore the check)";
-      b.style.marginTop = "8px";
-      b.onclick = async () => {
+      const row = document.createElement("div");
+      row.className = "row fixrow"; row.style.marginTop = "8px";
+      const pg = document.createElement("input");
+      pg.type = "number"; pg.min = "1"; pg.placeholder = "page"; pg.style.cssText = "width:80px;padding:7px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:inherit";
+      const b1 = document.createElement("button");
+      b1.className = "force"; b1.textContent = "Process anyway (ignore the check)";
+      b1.onclick = async () => {
         if (!confirm("The check found a problem with this file (see the message). Process anyway?")) return;
         await processOne(q, true); refresh();
       };
-      q.li.appendChild(b);
+      const b2 = document.createElement("button");
+      b2.className = "force"; b2.textContent = "Fix: put signature on this page \u2192";
+      b2.title = "Invoices only: choose the page that gets the 'For and on behalf of' block, then process";
+      b2.onclick = async () => {
+        const n = parseInt(pg.value, 10);
+        if (!n || n < 1) { alert("Enter the page number for the signature block."); return; }
+        if (!confirm("Process with the signature block on page " + n + "?")) return;
+        await processOne(q, true, n); refresh();
+      };
+      row.append(b1, b2, pg);
+      q.li.appendChild(row);
     }
   } catch (e) {
     q.state = "bad"; setBadge(q, "b-bad", "Error"); addLog(q, String(e));

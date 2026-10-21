@@ -54,6 +54,11 @@ Command line (no UI): `python inv_editor.py INV_x.pdf PL_x.pdf -o out/`
 Before editing, the tool checks that all pages belong to the same document (same invoice number, `Page x of N` matches the page count) and that the expected pages/fields exist. A file that fails is skipped with the reason; in the app a **Process anyway** button lets the user override after confirming.
 If the invoice totals end on the second-to-last page and the last page is an empty overflow page, the signature block is placed at the top of that last page.
 
+## Failed checks and how to fix them (v1.1.0)
+- **Auto-fix (default):** known harmless deviations are accepted and listed as `[FIX]` in the file's log, e.g. the last-page footer `Page N of N` cannot be read (or shows the wrong number) but `Invoice Total` is present and the other pages say `of N`. Untick *Auto-fix* in Settings, or use `--strict`, to skip these files instead.
+- **Diagnosis:** a file that still fails shows `[DIAG]` lines: footer read on every page, page(s) with `Invoice Total`, last lines of the last page.
+- **Manual fix:** on a failed invoice, type the page number and click *Fix: put signature on this page* (CLI: `--sign-page N`). *Process anyway* still ignores the checks (CLI: `--force`).
+
 ## Limits
 - Made for this specific system-generated layout. A file that fails the page checks is skipped with a reason, never edited blindly.
 - The "digitally signed and authorized by" line is plain text, not a cryptographic signature. Use it only where authorized.
