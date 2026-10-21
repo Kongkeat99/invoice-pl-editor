@@ -27,7 +27,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import inv_editor as core
 
 APP_NAME = "Invoice & PL Editor"
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 MAX_UPLOAD = 200 * 1024 * 1024  # 200 MB
 HEARTBEAT_TIMEOUT = 180         # seconds without a browser ping -> app exits
 CSRF_HEADER = ("X-Requested-With", "InvoiceEditor")
@@ -106,7 +106,7 @@ def process_pdf(name, data):
         apply_settings(clean_settings(s))
         outdir = Path(s["output_dir"]).expanduser()
         outdir.mkdir(parents=True, exist_ok=True)
-        dst = outdir / f"{Path(name).stem}_edited.pdf"
+        dst = outdir / name   # same file name as the original
 
         buf = io.StringIO()
         ok = False

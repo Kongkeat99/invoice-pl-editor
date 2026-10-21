@@ -16,7 +16,7 @@ Runs 100% on your computer (small local server on 127.0.0.1 + your browser as th
 2. Replaces the Actual Manufacturer address
 
 Edits are made inside the PDF content, so the old text is really removed (not just covered).
-Originals are never changed; results are saved as `<name>_edited.pdf`.
+Originals are never changed; results are saved in the output folder with the **same file name** (set the output folder to a different folder than the originals).
 
 ## For users (no Python)
 Download the zip for your system from the Releases page, unzip, double-click.

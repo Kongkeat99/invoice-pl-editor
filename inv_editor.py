@@ -17,7 +17,7 @@ Edits are made inside the page content stream, so the old text is really
 removed (not just covered by a white box) and cannot be copied/searched.
 
 Usage
-  python inv_editor.py INV_SC260372.pdf                 -> INV_SC260372_edited.pdf
+  python inv_editor.py INV_SC260372.pdf -o out/   -> out/INV_SC260372.pdf (same name; without -o: *_edited.pdf)
   python inv_editor.py a.pdf b.pdf -o out_dir/          -> batch
   python inv_editor.py a.pdf --left-align              -> header starts at original left x
 """
@@ -355,7 +355,10 @@ def main():
 
     ok_all = True
     for f in a.files:
-        dst = (a.out or f.parent) / f"{f.stem}_edited.pdf"
+        dst = (a.out or f.parent) / f.name          # same file name as the original
+        if dst.resolve() == f.resolve():             # never overwrite the original
+            dst = f.with_name(f"{f.stem}_edited.pdf")
+            print(f"[NOTE ] output folder = input folder, saving as {dst.name}")
         try:
             ok_all &= process(f, dst, not a.left_align, a.force)
         except Exception as e:
