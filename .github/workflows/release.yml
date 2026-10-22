@@ -19,11 +19,6 @@ jobs:
             args: "--onefile --windowed"
             artifact: InvoicePLEditor-windows
             pack: "Compress-Archive -Path dist/InvoicePLEditor.exe -DestinationPath InvoicePLEditor-windows.zip"
-          - os: macos-latest
-            sep: ":"
-            args: "--onedir --windowed"
-            artifact: InvoicePLEditor-macos
-            pack: "cd dist && zip -r ../InvoicePLEditor-macos.zip InvoicePLEditor.app"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
