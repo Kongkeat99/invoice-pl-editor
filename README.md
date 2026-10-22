@@ -14,6 +14,8 @@ Runs 100% on your computer (small local server on 127.0.0.1 + your browser as th
 **Invoice with number starting with "C" (e.g. C262093, not SC...)** - already signed, header already has no "Shipment":
 page 1: Actual Manufacturer address replaced; last page: the company line under "For and on behalf of" and the "digitally signed and authorized by" line are rewritten from the Settings (no header edit, no new signature block).
 
+**Packing List with number starting with "C"** - checks page 1, then replaces the Actual Manufacturer address (page 1) and the company/address block at the top-left of every page (text in `NEW_HEADER` in `inv_editor.py`).
+
 **Packing List**
 1. Checks page 1 is a packing list
 2. Replaces the Actual Manufacturer address

@@ -13,6 +13,9 @@ Invoice numbers starting with "C" (e.g. C262093, not SC...) - already signed, he
   Page 1: Actual Manufacturer address replaced. Last page: the company line under "For and on behalf of" and the
   "digitally signed and authorized by" line are rewritten (settings). No header edit, no new signature block.
 
+Packing List with invoice number starting with "C" - page 1 checked, then the Actual Manufacturer address and the
+  top-left company address (every page) are replaced.
+
 Packing List (PL_*.pdf) - detected automatically from page 1
   1. Check first page is a Packing List (Packing List header + Actual Manufacturer box)
   2. Replace the Actual Manufacturer address with the same new address as the Invoice
@@ -48,6 +51,15 @@ NEW_MANUFACTURER = [
     "Phnom Penh CAMBODIA",
     "Phone: 023-880442-3",
     "Fax:023-880534",
+]
+# Packing List with number starting with "C": company block at the top-left of every page (first line bold 9pt)
+NEW_HEADER = [
+    "TRAX APPAREL (CAMBODIA)CO.,LTD.",
+    "PHUM CHONG THNAL KHANG KERT,",
+    "SANGKAT TEUK THLA,KHAN SEN SOK",
+    "PHNOM PENH,CAMBODIA",
+    "Phone:023-880442-3",
+    "FAX:023-880534",
 ]
 OLD_NAME = "TRAX APPAREL"  # text that must be gone from page 1 after the edit
 WORD_TO_REMOVE = "Shipment"
@@ -422,6 +434,39 @@ def replace_manufacturer_pl(data, lines):
     return data[: m.start()] + "\n".join(out) + data[m.end():]
 
 
+def replace_header_pl(data, lines):
+    """Top-left company block of a PL page (title + address). On page 1 the 'Packing List as of ...'
+    text is positioned relative to the last line of this block, so its Td is recalculated to keep
+    it exactly where it was."""
+    m = re.compile(
+        r"/R2 9 Tf\nBT\n(\S+) (\S+) Td\n\[\(TRAX[^\n]*\]TJ\n/R3 7 Tf\n(\S+) (\S+) Td\n"
+        r"((?:[^\n]*\n)*?)"
+        r"(\S+) (\S+) Td\n\[\(\.\.\)\]TJ\n"
+    ).search(data)
+    if not m:
+        raise ValueError("PL header address block not found in content stream")
+    x0, y0 = float(m.group(1)), float(m.group(2))
+    # absolute position of the '..' marker = where the next relative Td starts from
+    x = x0 + float(m.group(3)) + float(m.group(6))
+    y = y0 + float(m.group(4)) + float(m.group(7))
+    for dx, dy in re.findall(r"(\S+) (\S+) Td\n", m.group(5)):
+        x += float(dx)
+        y += float(dy)
+
+    last_y = y0 - 7.65 - LINE_GAP * (len(lines) - 2)
+    out = [f"/R2 9 Tf\nBT\n{m.group(1)} {m.group(2)} Td\n[({pdf_escape(lines[0])})]TJ\n/R3 7 Tf\n0 -7.65 Td\n"
+           f"[({pdf_escape(lines[1])})]TJ"]
+    for ln in lines[2:]:
+        out.append(f"0 -{LINE_GAP} Td\n[({pdf_escape(ln)})]TJ")
+    new = "\n".join(out) + "\n"
+    rest = data[m.end():]
+    m2 = re.match(r"(0\.545098 0 0 rg\n/R3 9 Tf\n)(\S+) (\S+) Td\n", rest)
+    if m2:   # 'Packing List as of ...' (page 1): keep its absolute position
+        ax, ay = x + float(m2.group(2)), y + float(m2.group(3))
+        rest = f"{m2.group(1)}{ax - x0:.4f} {ay - last_y:.4f} Td\n" + rest[m2.end():]
+    return data[: m.start()] + new + rest
+
+
 # ----------------------------------------------------------------------------
 # main pipeline
 # ----------------------------------------------------------------------------
@@ -605,9 +650,61 @@ def process_pl(src, dst, force=False):
     return ok
 
 
+def process_pl_c(src, dst, force=False):
+    """Packing List whose number starts with 'C': check page 1, then replace the Actual Manufacturer
+    address (page 1) and the company/address block at the top-left of every page."""
+    problems = check_consistency(src) + check_pl_first_page(src)
+    if problems:
+        print(f"[CHECK] {src.name}: " + "; ".join(problems))
+        if not force:
+            print("        skipped (use --force to try anyway)")
+            return False
+    print(f"[CHECK] {src.name}: Packing List type 'C' - first page OK")
+
+    reader = PdfReader(str(src))
+    writer = PdfWriter()
+    writer.append(reader)
+    for i, page in enumerate(writer.pages):
+        data = get_stream(page)
+        if i == 0:
+            data = replace_manufacturer_pl(data, NEW_MANUFACTURER)
+            print("[EDIT ] page 1: manufacturer address replaced")
+        try:
+            data = replace_header_pl(data, NEW_HEADER)
+            print(f"[EDIT ] page {i + 1}: top-left company address replaced")
+        except ValueError as e:
+            if i == 0:
+                print(f"[CHECK] {src.name}: {e}")
+                if not force:
+                    print("        skipped (use --force to try anyway)")
+                    return False
+            print(f"[WARN ] page {i + 1}: {e} - header left as is")
+        set_stream(writer, page, data)
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with open(dst, "wb") as f:
+        writer.write(f)
+
+    with pdfplumber.open(dst) as pdf:
+        t = pdf.pages[0].extract_text() or ""
+        pages_ok = len(pdf.pages) == len(reader.pages)
+    ok = (
+        NEW_MANUFACTURER[0] in t and NEW_MANUFACTURER[-1] in t
+        and NEW_HEADER[1] in t and NEW_HEADER[-1] in t
+        and "RUSSIAN FEDERATION" not in t and "85578666971" not in t
+        and "Packing List as of" in t and "Consignee" in t
+        and pages_ok
+    )
+    print(f"[VERIFY] {'OK' if ok else 'FAILED'} -> {dst}")
+    return ok
+
+
 def process(src, dst, keep_position=False, force=False, sign_page=None):
     kind = detect_type(src)
     if kind == "PL":
+        num = (invoice_number_of(src) or "").upper()
+        if num.startswith(ADDRESS_ONLY_PREFIXES):
+            return process_pl_c(src, dst, force)
         return process_pl(src, dst, force)
     if kind == "INV":
         num = (invoice_number_of(src) or "").upper()
